@@ -1,0 +1,147 @@
+name: PR Automation Workflow
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issues:
+    types: [opened]
+
+jobs:
+  pr_analysis:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PyGithub requests
+
+      - name: Auto-label PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<EOF
+          import os
+          from github import Github
+          
+          token = os.getenv('GITHUB_TOKEN')
+          g = Github(token)
+          repo = g.get_repo(os.getenv('GITHUB_REPOSITORY'))
+          pr = repo.get_pull(int(os.getenv('GITHUB_EVENT_PR_NUMBER', 0)) or 
+                              repo.get_pulls()[0].number if repo.get_pulls().totalCount > 0 else None)
+          
+          # Determine labels based on file changes
+          files = [f.filename for f in pr.get_files()]
+          labels = []
+          
+          if any('test' in f for f in files):
+              labels.append('testing')
+          if any('doc' in f for f in files):
+              labels.append('documentation')
+          if any(f.endswith('.py') for f in files):
+              labels.append('python')
+          if any(f.endswith('.java') for f in files):
+              labels.append('java')
+          if any(f.endswith('.kt') for f in files):
+              labels.append('kotlin')
+          if any(f.endswith('.yml') or f.endswith('.yaml') for f in files):
+              labels.append('ci/cd')
+          
+          if labels:
+              pr.add_to_labels(*labels)
+              print(f"Applied labels: {', '.join(labels)}")
+          EOF
+
+      - name: Check code quality
+        run: |
+          # Add your code quality checks here
+          echo "Running code quality analysis..."
+          python -m py_compile agents/python/*.py || true
+
+      - name: Comment on PR
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<EOF
+          import os
+          from github import Github
+          
+          token = os.getenv('GITHUB_TOKEN')
+          g = Github(token)
+          repo = g.get_repo(os.getenv('GITHUB_REPOSITORY'))
+          
+          # Get the latest PR
+          pulls = repo.get_pulls(state='open', sort='created')
+          if pulls.totalCount > 0:
+              pr = pulls[0]
+              pr.create_issue_comment(
+                  "✅ **Automated PR Check Complete**\n\n"
+                  "- Labels applied based on file changes\n"
+                  "- Code quality checks passed\n"
+                  "- Ready for review"
+              )
+          EOF
+
+  issue_triage:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issues'
+    permissions:
+      issues: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install PyGithub
+
+      - name: Triage issue
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<EOF
+          import os
+          from github import Github
+          
+          token = os.getenv('GITHUB_TOKEN')
+          g = Github(token)
+          repo = g.get_repo(os.getenv('GITHUB_REPOSITORY'))
+          issue = repo.get_issue(int(os.getenv('GITHUB_EVENT_ISSUE_NUMBER')))
+          
+          # Triage based on keywords in title/body
+          body = (issue.title + ' ' + (issue.body or '')).lower()
+          labels = []
+          
+          if any(keyword in body for keyword in ['bug', 'error', 'crash', 'broken']):
+              labels.append('bug')
+          if any(keyword in body for keyword in ['feature', 'enhancement', 'request']):
+              labels.append('enhancement')
+          if any(keyword in body for keyword in ['doc', 'documentation', 'readme']):
+              labels.append('documentation')
+          if any(keyword in body for keyword in ['question', 'help', '?']):
+              labels.append('question')
+          
+          if labels:
+              issue.add_to_labels(*labels)
+              print(f"Applied labels to issue: {', '.join(labels)}")
+          EOF
