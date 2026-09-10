@@ -1,0 +1,207 @@
+name: Issue Triage and Management
+
+on:
+  issues:
+    types: [opened, edited]
+  schedule:
+    - cron: '0 9 * * MON'  # Weekly triage on Monday at 9 AM
+
+jobs:
+  triage_issues:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PyGithub
+
+      - name: Triage and label issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<EOF
+          import os
+          from github import Github, IssueState
+          
+          token = os.getenv('GITHUB_TOKEN')
+          g = Github(token)
+          repo = g.get_repo(os.getenv('GITHUB_REPOSITORY'))
+          
+          # Get all open issues
+          issues = repo.get_issues(state='open')
+          
+          for issue in issues:
+              if issue.pull_request:
+                  continue  # Skip pull requests
+              
+              body = (issue.title + ' ' + (issue.body or '')).lower()
+              labels_to_add = []
+              
+              # Bug detection
+              if any(keyword in body for keyword in ['bug', 'error', 'crash', 'broken', 'fail', 'exception']):
+                  labels_to_add.append('bug')
+              
+              # Feature request detection
+              if any(keyword in body for keyword in ['feature', 'enhancement', 'request', 'please add', 'would be nice']):
+                  labels_to_add.append('enhancement')
+              
+              # Documentation detection
+              if any(keyword in body for keyword in ['doc', 'documentation', 'readme', 'example', 'tutorial']):
+                  labels_to_add.append('documentation')
+              
+              # Question/Help detection
+              if any(keyword in body for keyword in ['question', 'help', 'how do', 'how to', '?']):
+                  labels_to_add.append('question')
+              
+              # Language-specific
+              if any(keyword in body for keyword in ['python', '.py', 'pip']):
+                  labels_to_add.append('python')
+              if any(keyword in body for keyword in ['java', '.java', 'maven', 'gradle']):
+                  labels_to_add.append('java')
+              if any(keyword in body for keyword in ['kotlin', '.kt', 'coroutines']):
+                  labels_to_add.append('kotlin')
+              
+              # Priority detection
+              if any(keyword in body for keyword in ['urgent', 'critical', 'asap', 'blocking', 'high priority']):
+                  labels_to_add.append('priority: high')
+              elif any(keyword in body for keyword in ['low priority', 'nice to have']):
+                  labels_to_add.append('priority: low')
+              else:
+                  labels_to_add.append('priority: medium')
+              
+              # Remove duplicates and apply labels
+              labels_to_add = list(set(labels_to_add))
+              if labels_to_add:
+                  try:
+                      issue.add_to_labels(*labels_to_add)
+                      print(f"Issue #{issue.number}: Applied labels {labels_to_add}")
+                  except Exception as e:
+                      print(f"Error labeling issue #{issue.number}: {e}")
+          EOF
+
+  assign_reviewers:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install PyGithub
+
+      - name: Auto-assign bug issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<EOF
+          import os
+          from github import Github
+          
+          token = os.getenv('GITHUB_TOKEN')
+          g = Github(token)
+          repo = g.get_repo(os.getenv('GITHUB_REPOSITORY'))
+          
+          # Get bug issues without assignees
+          issues = repo.get_issues(state='open', labels=['bug'])
+          
+          for issue in issues:
+              if not issue.assignees and not issue.assignee:
+                  # Get repo collaborators
+                  collaborators = list(repo.get_collaborators())
+                  if collaborators:
+                      # Assign to first collaborator (you can customize this logic)
+                      assignee = collaborators[0]
+                      issue.edit(assignee=assignee)
+                      print(f"Assigned issue #{issue.number} to {assignee.login}")
+          EOF
+
+  close_stale_issues:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Close stale issues
+        uses: actions/stale@v8
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          stale-issue-message: |
+            This issue has been inactive for 30 days. If this is still relevant, please comment to keep it open.
+            Otherwise, it will be closed in 7 days.
+          stale-issue-label: 'stale'
+          days-before-issue-stale: 30
+          days-before-issue-close: 7
+          exempt-issue-labels: 'bug,enhancement,pinned'
+          only-labels: 'question'
+
+  issue_summary:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    permissions:
+      issues: read
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install PyGithub
+
+      - name: Generate issue summary
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<EOF
+          import os
+          from github import Github
+          from collections import defaultdict
+          
+          token = os.getenv('GITHUB_TOKEN')
+          g = Github(token)
+          repo = g.get_repo(os.getenv('GITHUB_REPOSITORY'))
+          
+          # Gather statistics
+          open_issues = repo.get_issues(state='open')
+          total_open = open_issues.totalCount
+          
+          label_counts = defaultdict(int)
+          for issue in repo.get_issues(state='open'):
+              for label in issue.labels:
+                  label_counts[label.name] += 1
+          
+          print("## Weekly Issue Summary")
+          print(f"Total Open Issues: {total_open}")
+          print("\n### Issues by Label:")
+          for label, count in sorted(label_counts.items(), key=lambda x: x[1], reverse=True):
+              print(f"- {label}: {count}")
+          EOF
